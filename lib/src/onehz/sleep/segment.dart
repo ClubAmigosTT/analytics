@@ -400,12 +400,9 @@ class SleepSegmentation {
 /// [accel] 1 Hz gravity vectors. [hr1hz] 1 Hz HR (bpm; 0 = off-skin), same time
 /// base / length as [accel].
 ///
-/// [hrBaseline] is CURRENTLY UNUSED. The file header describes a pipeline step
-/// that confirms/refines onset and offset against a nocturnal-HR dip; no such
-/// code exists, and the parameter is read nowhere in this file. It is kept in
-/// the signature (all three edge call sites pass a real baseline) so wiring the
-/// step up later is a one-file change — but until then, onset and offset are
-/// NOT HR-refined, whatever the header says.
+/// [hrBaseline] supplies a caller-bounded reference for detection. When present,
+/// later waking samples cannot change the HR gate for an earlier sleep run.
+/// It does not override the per-session stage classification.
 SleepSegmentation segmentSleep(
   List<AccelSample> accel,
   List<double> hr1hz, {
@@ -496,6 +493,9 @@ SleepSegmentation segmentSleep(
       hr,
       rr: rr,
       tzOffsetResolver: tzAt,
+      detectionHrBaseline: hrBaseline == null || hrBaseline.isEmpty
+          ? null
+          : median(hrBaseline.where((v) => v.isFinite && v > 0).toList()),
     );
     if (sessions.isEmpty) return SleepSegmentation.absent;
 

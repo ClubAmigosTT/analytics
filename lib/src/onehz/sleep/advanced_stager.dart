@@ -130,6 +130,7 @@ class HypnogramMetrics {
   final int tibS;
   final int tstS;
   final int sptS;
+
   /// Sleep-onset latency (s). NULL when NOTHING staged as sleep — reporting
   /// the whole time in bed as "time to fall asleep" alongside TST 0 is a
   /// fabricated measurement, not an abstention.
@@ -232,6 +233,7 @@ class AdvancedSleepStager {
   static const double featureWindowS = 5 * 60.0;
   static const double ckCountDivisor = 100.0;
   static const double ckCountClip = 300.0;
+
   /// Movement threshold on the gravity vector, in **g per second** — same
   /// consecutive-sample-delta trap as [gravityStillThresholdGPerS], same fix.
   static const double moveDeltaThresholdGPerS = 0.01;
@@ -313,6 +315,7 @@ class AdvancedSleepStager {
     List<RespTs> resp = const [],
     int tzOffsetSec = 0,
     int Function(int tsSec)? tzOffsetResolver,
+    double? detectionHrBaseline,
     StagingMethod method = StagingMethod.cardio,
     List<List<int>> wristOff = const [], // each [start,end]
     List<List<int>> bandSleepState = const [], // each [ts,state]
@@ -327,7 +330,11 @@ class AdvancedSleepStager {
     final rrS = [...rr]..sort((a, b) => a.ts.compareTo(b.ts));
     final respS = [...resp]..sort((a, b) => a.ts.compareTo(b.ts));
 
-    final baseline = _hrBaseline(hrS);
+    final baseline = detectionHrBaseline != null &&
+            detectionHrBaseline.isFinite &&
+            detectionHrBaseline > 0
+        ? detectionHrBaseline
+        : _hrBaseline(hrS);
     final sparse = _isGravitySparse(grav, hrS);
 
     final deltas = _gravityDeltas(grav);
@@ -386,9 +393,11 @@ class AdvancedSleepStager {
       }
 
       final stages = switch (method) {
-        StagingMethod.cardio => _stageSessionCardio(p.start, p.end, grav, hrS, rrS),
+        StagingMethod.cardio =>
+          _stageSessionCardio(p.start, p.end, grav, hrS, rrS),
         StagingMethod.v2 => _stageSessionV2(p.start, p.end, grav, hrS, rrS),
-        StagingMethod.v1 => _stageSession(p.start, p.end, grav, hrS, rrS, respS),
+        StagingMethod.v1 =>
+          _stageSession(p.start, p.end, grav, hrS, rrS, respS),
       };
       final eff = _efficiency(p.start, p.end, stages);
       final avgHrv = _sessionAvgHRV(p.start, p.end, rrS);
@@ -437,9 +446,11 @@ class AdvancedSleepStager {
     StagingMethod method = StagingMethod.cardio,
   }) {
     final stages = switch (method) {
-      StagingMethod.cardio => _stageSessionCardio(startSec, endSec, gravity, hr, rr),
+      StagingMethod.cardio =>
+        _stageSessionCardio(startSec, endSec, gravity, hr, rr),
       StagingMethod.v2 => _stageSessionV2(startSec, endSec, gravity, hr, rr),
-      StagingMethod.v1 => _stageSession(startSec, endSec, gravity, hr, rr, resp),
+      StagingMethod.v1 =>
+        _stageSession(startSec, endSec, gravity, hr, rr, resp),
     };
     return SleepSession(
       start: startSec,
@@ -551,9 +562,13 @@ class AdvancedSleepStager {
     return median([for (final h in hr) h.bpm]);
   }
 
-  static bool _hrSleepBandAcross(int a, int b, List<HrTs> hr, double? baseline) {
+  static bool _hrSleepBandAcross(
+      int a, int b, List<HrTs> hr, double? baseline) {
     if (baseline == null) return false;
-    final seg = [for (final h in hr) if (h.ts > a && h.ts <= b) h.bpm];
+    final seg = [
+      for (final h in hr)
+        if (h.ts > a && h.ts <= b) h.bpm
+    ];
     if (seg.isEmpty) return false;
     final meanHr = seg.reduce((x, y) => x + y) / seg.length;
     return meanHr <= baseline * hrSleepBandMult;
@@ -684,8 +699,10 @@ class AdvancedSleepStager {
 
   // ── HR refinement / guards ──────────────────────────────────────────────────
 
-  static List<HrTs> _rowsBetween(List<HrTs> rows, int start, int end) =>
-      [for (final r in rows) if (r.ts >= start && r.ts <= end) r];
+  static List<HrTs> _rowsBetween(List<HrTs> rows, int start, int end) => [
+        for (final r in rows)
+          if (r.ts >= start && r.ts <= end) r
+      ];
 
   static bool _confirmSleepWithHR(_Period p, List<HrTs> hr, double? baseline) {
     if (baseline == null) return true;
@@ -695,7 +712,8 @@ class AdvancedSleepStager {
     return meanHr <= baseline * hrSleepBaselineMult;
   }
 
-  static int _secOfDay(int local) => ((local % secondsPerDay) + secondsPerDay) % secondsPerDay;
+  static int _secOfDay(int local) =>
+      ((local % secondsPerDay) + secondsPerDay) % secondsPerDay;
 
   static bool _isDaytimeCenter(_Period p, int Function(int) tzAt) {
     final center = p.start + (p.end - p.start) ~/ 2;
@@ -714,9 +732,12 @@ class AdvancedSleepStager {
     return restingHR <= baseline * daytimeRestingHRMult;
   }
 
-  static bool _bandStateConfirmsAsleep(_Period p, List<List<int>> bandSleepState) {
-    final inBlock =
-        [for (final b in bandSleepState) if (b[0] >= p.start && b[0] <= p.end) b];
+  static bool _bandStateConfirmsAsleep(
+      _Period p, List<List<int>> bandSleepState) {
+    final inBlock = [
+      for (final b in bandSleepState)
+        if (b[0] >= p.start && b[0] <= p.end) b
+    ];
     if (inBlock.isEmpty) return false;
     final asleep = inBlock.where((b) => b[1] == bandStateAsleep).length;
     return asleep / inBlock.length >= morningReonsetBandAsleepFrac;
@@ -740,7 +761,8 @@ class AdvancedSleepStager {
     if (hr.isEmpty || p.end <= p.start) return const [];
     final sortedAll = [...hr]..sort((a, b) => a.ts.compareTo(b.ts));
     final streamSpan = sortedAll.last.ts - sortedAll.first.ts;
-    if (streamSpan >= hrDenseSpacingS && hr.length < streamSpan ~/ hrDenseSpacingS) {
+    if (streamSpan >= hrDenseSpacingS &&
+        hr.length < streamSpan ~/ hrDenseSpacingS) {
       return const [];
     }
     const gapS = offWristHRGapMin * 60;
@@ -756,13 +778,15 @@ class AdvancedSleepStager {
     final spans = <List<int>>[];
     if (seg.first.ts - p.start >= gapS) spans.add([p.start, seg.first.ts]);
     for (var i = 1; i < seg.length; i++) {
-      if (seg[i].ts - seg[i - 1].ts >= gapS) spans.add([seg[i - 1].ts, seg[i].ts]);
+      if (seg[i].ts - seg[i - 1].ts >= gapS)
+        spans.add([seg[i - 1].ts, seg[i].ts]);
     }
     if (p.end - seg.last.ts >= gapS) spans.add([seg.last.ts, p.end]);
     return spans;
   }
 
-  static double _offWristFraction(_Period p, List<HrTs> hr, List<List<int>> wristOff) {
+  static double _offWristFraction(
+      _Period p, List<HrTs> hr, List<List<int>> wristOff) {
     final dur = p.end - p.start;
     if (dur <= 0) return 0;
     final spans = [..._offWristHRGapSpans(p, hr)];
@@ -807,7 +831,10 @@ class AdvancedSleepStager {
     var t = start;
     final means = <double>[];
     while (t < end) {
-      final win = [for (final r in seg) if (r.ts >= t && r.ts < t + windowS) r.bpm];
+      final win = [
+        for (final r in seg)
+          if (r.ts >= t && r.ts < t + windowS) r.bpm
+      ];
       if (win.isNotEmpty) means.add(win.reduce((a, b) => a + b) / win.length);
       t += windowS;
     }
@@ -831,13 +858,15 @@ class AdvancedSleepStager {
 
   // ── Epoch grid ──────────────────────────────────────────────────────────────
 
-  static _EpochGrid _buildEpochGrid(
-      int start, int end, List<GravTs> gSeg, List<HrTs> hSeg, List<RrTs> rSeg, List<RespTs> respSeg) {
+  static _EpochGrid _buildEpochGrid(int start, int end, List<GravTs> gSeg,
+      List<HrTs> hSeg, List<RrTs> rSeg, List<RespTs> respSeg) {
     if (end <= start) {
       return _EpochGrid([start.toDouble()], 0, [], [], [], [], [], []);
     }
     final nEpochs = math.max(1, ((end - start) / epochS).ceil());
-    final edges = <double>[for (var i = 0; i <= nEpochs; i++) start + i * epochS];
+    final edges = <double>[
+      for (var i = 0; i <= nEpochs; i++) start + i * epochS
+    ];
     edges[nEpochs] = math.max(edges[nEpochs], end.toDouble());
 
     int? idx(int ts) {
@@ -908,8 +937,8 @@ class AdvancedSleepStager {
     final ckFlags = !cadenceOk
         ? List<bool>.filled(nEpochs, false)
         : _coleKripke(_rescaleCounts(counts));
-    return _EpochGrid(edges, nEpochs, counts, hr, moveFrac, rrBuckets,
-        respBuckets, ckFlags);
+    return _EpochGrid(
+        edges, nEpochs, counts, hr, moveFrac, rrBuckets, respBuckets, ckFlags);
   }
 
   /// Per-epoch gravity-delta SUM → the Cole-Kripke count surrogate.
@@ -925,9 +954,8 @@ class AdvancedSleepStager {
   /// non-WHOOP bands this rate model exists to support. The 1 Hz path is
   /// unaffected either way (`cadenceSec == 1`), which is why the defect was
   /// invisible until now.
-  static List<double> _rescaleCounts(List<double> counts) => [
-        for (final c in counts) math.min(c / ckCountDivisor, ckCountClip)
-      ];
+  static List<double> _rescaleCounts(List<double> counts) =>
+      [for (final c in counts) math.min(c / ckCountDivisor, ckCountClip)];
 
   static List<bool> _coleKripke(List<double> rescaled) {
     final n = rescaled.length;
@@ -976,7 +1004,8 @@ class AdvancedSleepStager {
     final sigma = math.max(sigmaS / dtS, 1e-6);
     final radius = math.max(1, (3 * sigma).ceil());
     final k = <double>[
-      for (var x = -radius; x <= radius; x++) math.exp(-0.5 * (x / sigma) * (x / sigma))
+      for (var x = -radius; x <= radius; x++)
+        math.exp(-0.5 * (x / sigma) * (x / sigma))
     ];
     final sum = k.reduce((a, b) => a + b);
     return [for (final v in k) v / sum];
@@ -1009,7 +1038,10 @@ class AdvancedSleepStager {
   static List<double> _dogHRVariability(List<double> hrPerEpoch) {
     final n = hrPerEpoch.length;
     if (n == 0) return const [];
-    final maskIdx = [for (var i = 0; i < n; i++) if (!hrPerEpoch[i].isNaN) i];
+    final maskIdx = [
+      for (var i = 0; i < n; i++)
+        if (!hrPerEpoch[i].isNaN) i
+    ];
     if (maskIdx.isEmpty) return List<double>.filled(n, 0);
     final filled = List<double>.filled(n, 0);
     for (var i = 0; i < n; i++) {
@@ -1065,10 +1097,12 @@ class AdvancedSleepStager {
         winResp.addAll(grid.respBuckets[j]);
       }
       final filteredRR = _rangeFilter(winRR);
-      final rmssd =
-          filteredRR.length >= 5 ? (_rmssdRaw(filteredRR) ?? double.nan) : double.nan;
-      final sdnn =
-          filteredRR.length >= 5 ? (stddev(filteredRR) ?? double.nan) : double.nan;
+      final rmssd = filteredRR.length >= 5
+          ? (_rmssdRaw(filteredRR) ?? double.nan)
+          : double.nan;
+      final sdnn = filteredRR.length >= 5
+          ? (stddev(filteredRR) ?? double.nan)
+          : double.nan;
       // BUG FIX (2026-07): `winResp` is fed from `resp:`/`RespTs`, a raw 1 Hz
       // respiration-ADC channel — but the WHOOP 4 R24 record has no such
       // channel (an early candidate field was dropped as constant/mirror
@@ -1111,7 +1145,8 @@ class AdvancedSleepStager {
   }
 
   /// (rate, rrv) from raw 1 Hz resp ADC, dtS=1.0.
-  static List<double> _respRateAndRRV(List<double> respRaw, {double dtS = 1.0}) {
+  static List<double> _respRateAndRRV(List<double> respRaw,
+      {double dtS = 1.0}) {
     if (respRaw.length < 8) return [double.nan, double.nan];
     final mean = respRaw.reduce((a, b) => a + b) / respRaw.length;
     final x = [for (final v in respRaw) v - mean];
@@ -1189,8 +1224,7 @@ class AdvancedSleepStager {
       }
     }
     if (distance <= 1 || candidates.isEmpty) return candidates;
-    final byHeight = [...candidates]
-      ..sort((a, b) {
+    final byHeight = [...candidates]..sort((a, b) {
         if (x[a] != x[b]) return x[b].compareTo(x[a]);
         return a.compareTo(b);
       });
@@ -1202,29 +1236,39 @@ class AdvancedSleepStager {
         if ((q - p).abs() < distance) keep[q] = false;
       }
     }
-    return [for (final c in candidates) if (keep[c]!) c];
+    return [
+      for (final c in candidates)
+        if (keep[c]!) c
+    ];
   }
 
   // ── Stage-2 classifier ──────────────────────────────────────────────────────
 
   static List<String> _classifyEpochs(List<_EpochFeatures> features) {
     final anyCk = features.any((f) => f.ckSleep);
-    final sleepFeats = anyCk ? features.where((f) => f.ckSleep).toList() : features;
+    final sleepFeats =
+        anyCk ? features.where((f) => f.ckSleep).toList() : features;
     final hrLo = _pct([for (final f in sleepFeats) f.hr], stageHRLowPct);
     final hrHi = _pct([for (final f in sleepFeats) f.hr], stageHRHighPct);
-    final rmssdHi = _pct([for (final f in sleepFeats) f.rmssd], stageHRVHighPct);
-    final hrvarHi = _pct([for (final f in sleepFeats) f.hrVar], stageHRVarHighPct);
+    final rmssdHi =
+        _pct([for (final f in sleepFeats) f.rmssd], stageHRVHighPct);
+    final hrvarHi =
+        _pct([for (final f in sleepFeats) f.hrVar], stageHRVarHighPct);
     final rrvHi = _pct([for (final f in sleepFeats) f.rrv], stageRRVHighPct);
     final rrvLo = _pct([for (final f in sleepFeats) f.rrv], stageRRVLowPct);
     final cardiacSparse = _isCardiacSparse(sleepFeats);
     return [
       for (final f in features)
-        _classifyOne(f, hrLo, hrHi, rmssdHi, hrvarHi, rrvHi, rrvLo, cardiacSparse)
+        _classifyOne(
+            f, hrLo, hrHi, rmssdHi, hrvarHi, rrvHi, rrvLo, cardiacSparse)
     ];
   }
 
   static double? _pct(List<double> values, double pct) {
-    final finite = [for (final v in values) if (v.isFinite) v];
+    final finite = [
+      for (final v in values)
+        if (v.isFinite) v
+    ];
     if (finite.isEmpty) return null;
     finite.sort();
     return _percentileSorted(finite, pct);
@@ -1236,12 +1280,20 @@ class AdvancedSleepStager {
     return missing >= cardiacSparseEpochFrac * sleepFeats.length;
   }
 
-  static String _classifyOne(_EpochFeatures f, double? hrLo, double? hrHi,
-      double? rmssdHi, double? hrvarHi, double? rrvHi, double? rrvLo, bool cardiacSparse) {
+  static String _classifyOne(
+      _EpochFeatures f,
+      double? hrLo,
+      double? hrHi,
+      double? rmssdHi,
+      double? hrvarHi,
+      double? rrvHi,
+      double? rrvLo,
+      bool cardiacSparse) {
     final hasHR = f.hr.isFinite;
     final hrLow = hasHR && hrLo != null && f.hr <= hrLo;
     final hrHigh = hasHR && hrHi != null && f.hr >= hrHi;
-    final parasympOK = (!f.rmssd.isFinite) || (rmssdHi != null && f.rmssd >= rmssdHi);
+    final parasympOK =
+        (!f.rmssd.isFinite) || (rmssdHi != null && f.rmssd >= rmssdHi);
     final hrvarHigh = f.hrVar.isFinite && hrvarHi != null && f.hrVar >= hrvarHi;
     final cardiacActivated = hrHigh || hrvarHigh;
     final cardiacActivatedForWake = cardiacSparse ? hrHigh : cardiacActivated;
@@ -1270,7 +1322,8 @@ class AdvancedSleepStager {
 
   // ── Stage-3 post-processing ─────────────────────────────────────────────────
 
-  static List<String> _smoothLabels(List<String> labels, {int window = smoothEpochs}) {
+  static List<String> _smoothLabels(List<String> labels,
+      {int window = smoothEpochs}) {
     final n = labels.length;
     if (n == 0 || window <= 1) return labels;
     var w = window;
@@ -1288,18 +1341,22 @@ class AdvancedSleepStager {
         counts[s] = (counts[s] ?? 0) + 1;
       }
       final best = counts.values.reduce(math.max);
-      final winners = [for (final s in order) if (counts[s] == best) s];
+      final winners = [
+        for (final s in order)
+          if (counts[s] == best) s
+      ];
       out[i] = winners.contains(labels[i]) ? labels[i] : winners.first;
     }
     return out;
   }
 
-  static List<String> _reimposePhysiology(
-      List<String> labels, List<_EpochFeatures> features, int onsetIdx, int finalWakeIdx) {
+  static List<String> _reimposePhysiology(List<String> labels,
+      List<_EpochFeatures> features, int onsetIdx, int finalWakeIdx) {
     final noREMEpochs = (noREMAfterOnsetMin * 60 / epochS).round();
     final hasEarlyDeep = () {
       for (var i = 0; i < labels.length; i++) {
-        if (labels[i] == 'deep' && features[i].clock <= deepFirstFraction) return true;
+        if (labels[i] == 'deep' && features[i].clock <= deepFirstFraction)
+          return true;
       }
       return false;
     }();
@@ -1317,7 +1374,8 @@ class AdvancedSleepStager {
 
   static List<String> _mergeFragments(List<String> labels,
       {int thresholdEpochs = fragmentMergeEpochs}) {
-    int depth(String s) => s == 'deep' ? 3 : (s == 'rem' ? 2 : (s == 'light' ? 1 : 0));
+    int depth(String s) =>
+        s == 'deep' ? 3 : (s == 'rem' ? 2 : (s == 'light' ? 1 : 0));
     final n = labels.length;
     if (n == 0 || thresholdEpochs <= 1) return labels;
     // Collapse to runs.
@@ -1347,7 +1405,8 @@ class AdvancedSleepStager {
       final hasPrev = merged.isNotEmpty;
       final hasNext = i + 1 < runs.length;
       if (hasPrev && hasNext && merged.last[0] == runs[i + 1][0]) {
-        merged.last[1] = (merged.last[1] as int) + curLen + (runs[i + 1][1] as int);
+        merged.last[1] =
+            (merged.last[1] as int) + curLen + (runs[i + 1][1] as int);
         i += 2;
       } else if (hasPrev && hasNext) {
         final prev = merged.last;
@@ -1427,8 +1486,8 @@ class AdvancedSleepStager {
   /// `cardioStager` itself abstains all come back as WAKE — the "stay unstaged"
   /// contract [stageWindow] documents. They must NEVER come back as 'light',
   /// which is what a zero-data window used to report for its entire length.
-  static List<StageSegment> _stageSessionCardio(int start, int end,
-      List<GravTs> grav, List<HrTs> hr, List<RrTs> rr) {
+  static List<StageSegment> _stageSessionCardio(
+      int start, int end, List<GravTs> grav, List<HrTs> hr, List<RrTs> rr) {
     final span = end - start;
     if (span <= 0) return const <StageSegment>[];
     final epSec = epochS.round();
@@ -1444,9 +1503,12 @@ class AdvancedSleepStager {
       for (final g in grav)
         if (g.valid && g.ts >= start && g.ts < end) g.ts: g
     };
-    final hByTs = <int, HrTs>{for (final h in hr) if (h.ts >= start && h.ts < end) h.ts: h};
-    final accel = List<AccelSample>.filled(
-        span, AccelSample(start * 1000.0, 0, 0, 1.0));
+    final hByTs = <int, HrTs>{
+      for (final h in hr)
+        if (h.ts >= start && h.ts < end) h.ts: h
+    };
+    final accel =
+        List<AccelSample>.filled(span, AccelSample(start * 1000.0, 0, 0, 1.0));
     final hr1hz = List<double>.filled(span, 0.0);
     // usable[i] — second i has a real accel sample or a BOUNDED carry-forward.
     final usable = List<bool>.filled(span, false);
@@ -1458,7 +1520,8 @@ class AdvancedSleepStager {
         accel[i] = AccelSample(ts * 1000.0, g.x, g.y, g.z);
         lastRealIdx = i;
         usable[i] = true;
-      } else if (lastRealIdx >= 0 && (i - lastRealIdx) <= maxAccelCarryForwardSec) {
+      } else if (lastRealIdx >= 0 &&
+          (i - lastRealIdx) <= maxAccelCarryForwardSec) {
         // Bounded carry-forward — see [maxAccelCarryForwardSec]. The TIMESTAMP
         // is this second's, not the stale sample's: cardioStager centres its RR
         // windows on `accel[mid].tsMs`, so copying the old sample wholesale
@@ -1467,10 +1530,14 @@ class AdvancedSleepStager {
         accel[i] = AccelSample(ts * 1000.0, p.x, p.y, p.z);
         usable[i] = true;
       }
-      hr1hz[i] = hByTs[ts]?.bpm ?? 0.0; // 0 = off-skin, cardioStager's own contract.
+      hr1hz[i] =
+          hByTs[ts]?.bpm ?? 0.0; // 0 = off-skin, cardioStager's own contract.
     }
 
-    final rSeg = [for (final r in rr) if (r.ts >= start && r.ts < end) r];
+    final rSeg = [
+      for (final r in rr)
+        if (r.ts >= start && r.ts < end) r
+    ];
     final rrMs = [for (final r in rSeg) r.rrMs];
     final rrTsMs = [for (final r in rSeg) r.ts * 1000.0];
 
@@ -1498,9 +1565,10 @@ class AdvancedSleepStager {
           final label = switch (result.base.stages[e]) {
             SleepStage.wake => 'wake',
             SleepStage.rem => 'rem',
-            SleepStage.nrem => (e < result.deepFlag.length && result.deepFlag[e])
-                ? 'deep'
-                : 'light',
+            SleepStage.nrem =>
+              (e < result.deepFlag.length && result.deepFlag[e])
+                  ? 'deep'
+                  : 'light',
           };
           final lo = i + e * epSec;
           // The last epoch absorbs the run's sub-epoch remainder, exactly as
@@ -1537,8 +1605,14 @@ class AdvancedSleepStager {
     ];
     if (gSeg.length < 2) return [StageSegment(start, end, 'light')];
     final hSeg = _rowsBetween(hr, start, end);
-    final rSeg = [for (final r in rr) if (r.ts >= start && r.ts <= end) r];
-    final respSeg = [for (final r in resp) if (r.ts >= start && r.ts <= end) r];
+    final rSeg = [
+      for (final r in rr)
+        if (r.ts >= start && r.ts <= end) r
+    ];
+    final respSeg = [
+      for (final r in resp)
+        if (r.ts >= start && r.ts <= end) r
+    ];
     final grid = _buildEpochGrid(start, end, gSeg, hSeg, rSeg, respSeg);
     if (grid.nEpochs == 0) return [StageSegment(start, end, 'light')];
     final ow = _onsetAndFinalWake(grid.ckFlags);
@@ -1618,8 +1692,14 @@ class AdvancedSleepStager {
       for (final g in grav)
         if (g.valid && g.ts >= lo && g.ts < hi) g
     ];
-    final hrW = [for (final h in hr) if (h.ts >= lo && h.ts < hi) h];
-    final rrW = [for (final r in rr) if (r.ts >= lo && r.ts < hi) r];
+    final hrW = [
+      for (final h in hr)
+        if (h.ts >= lo && h.ts < hi) h
+    ];
+    final rrW = [
+      for (final r in rr)
+        if (r.ts >= lo && r.ts < hi) r
+    ];
     final feats = _v2Features(start, end, gravW, hrW, rrW);
     if (feats.isEmpty) return [StageSegment(start, end, 'light')];
     final labels = _v2StageEpochs(feats);
@@ -1646,7 +1726,9 @@ class AdvancedSleepStager {
     // per-second aggregation
     final secHRsum = <int, double>{};
     final secHRcnt = <int, int>{};
-    final secGx = <int, double>{}, secGy = <int, double>{}, secGz = <int, double>{};
+    final secGx = <int, double>{},
+        secGy = <int, double>{},
+        secGz = <int, double>{};
     final secGcnt = <int, int>{};
     final rrBy = <int, List<double>>{};
     for (final h in hr) {
@@ -1662,9 +1744,14 @@ class AdvancedSleepStager {
     for (final r in rr) {
       (rrBy[r.ts] ??= []).add(r.rrMs);
     }
-    double? secHR(int s) => secHRcnt.containsKey(s) ? secHRsum[s]! / secHRcnt[s]! : null;
+    double? secHR(int s) =>
+        secHRcnt.containsKey(s) ? secHRsum[s]! / secHRcnt[s]! : null;
     List<double>? secG(int s) => secGcnt.containsKey(s)
-        ? [secGx[s]! / secGcnt[s]!, secGy[s]! / secGcnt[s]!, secGz[s]! / secGcnt[s]!]
+        ? [
+            secGx[s]! / secGcnt[s]!,
+            secGy[s]! / secGcnt[s]!,
+            secGz[s]! / secGcnt[s]!
+          ]
         : null;
 
     // prefix sums over per-second HR grid for O(1) std windows
@@ -1729,7 +1816,8 @@ class AdvancedSleepStager {
       }
       allJerks.addAll(jerks);
       final jerkMax = jerks.isEmpty ? 0.0 : jerks.reduce(math.max);
-      final hrMean = hrs.isEmpty ? null : hrs.reduce((a, b) => a + b) / hrs.length;
+      final hrMean =
+          hrs.isEmpty ? null : hrs.reduce((a, b) => a + b) / hrs.length;
       final hrVar = stdOfSeconds(e - 150, e + 30 + 150);
       final hrFlat11 = stdOfSeconds(e - 330, e + 30 + 360);
       final beats = <List<double>>[];
@@ -1805,7 +1893,8 @@ class AdvancedSleepStager {
       }
       final ta = beats[seg][0], tb = beats[seg + 1][0];
       final va = beats[seg][1], vb = beats[seg + 1][1];
-      y[i] = tb <= ta ? va : va + _clampD((t - ta) / (tb - ta), 0, 1) * (vb - va);
+      y[i] =
+          tb <= ta ? va : va + _clampD((t - ta) / (tb - ta), 0, 1) * (vb - va);
     }
     final mean = y.reduce((a, b) => a + b) / n;
     for (var i = 0; i < n; i++) {
@@ -1833,7 +1922,10 @@ class AdvancedSleepStager {
   static List<String> _v2StageEpochs(List<_V2Epoch> feats) {
     if (feats.isEmpty) return const [];
     double Function(double?) zfun(List<double?> vals) {
-      final present = [for (final v in vals) if (v != null) v];
+      final present = [
+        for (final v in vals)
+          if (v != null) v
+      ];
       if (present.isEmpty) return (_) => 0;
       final m = mean(present)!;
       final sd0 = stddevPop(present)!;
@@ -1846,7 +1938,10 @@ class AdvancedSleepStager {
     final zmv = zfun([for (final f in feats) f.moveFrac]);
     final zrg = zfun([for (final f in feats) f.respReg]);
 
-    final fsorted = [for (final f in feats) if (f.hrFlat11 != null) f.hrFlat11!]..sort();
+    final fsorted = [
+      for (final f in feats)
+        if (f.hrFlat11 != null) f.hrFlat11!
+    ]..sort();
     double fpct(double? v) {
       if (v == null || fsorted.isEmpty) return 0.5;
       // bisect_right
@@ -1868,7 +1963,8 @@ class AdvancedSleepStager {
       final zhrv = zhr(f.hr);
       final zhvv = zhv(f.hrVar);
       final zmvv = zmv(f.moveFrac);
-      final gate = _v2DeepGateSlope * math.max(0, fpct(f.hrFlat11) - _v2DeepGateThresh);
+      final gate =
+          _v2DeepGateSlope * math.max(0, fpct(f.hrFlat11) - _v2DeepGateThresh);
       final em = <String, double>{
         'deep': -1.4 * zhvv - 0.2 * zhrv - 0.3 * zmvv - gate + base['deep']!,
         'rem': 0.6 * zhvv - 0.6 * zmvv + 0.4 * zhrv + base['rem']!,
@@ -1896,7 +1992,10 @@ class AdvancedSleepStager {
     if (emSeq.isEmpty) return const [];
     final logT = {
       for (final from in _v2StageNames)
-        from: {for (final to in _v2StageNames) to: math.log(_v2Transition[from]![to]!)}
+        from: {
+          for (final to in _v2StageNames)
+            to: math.log(_v2Transition[from]![to]!)
+        }
     };
     var v = Map<String, double>.from(emSeq[0]);
     final back = <Map<String, String>>[];
@@ -1938,10 +2037,12 @@ class AdvancedSleepStager {
   // ── AASM hypnogram metrics ──────────────────────────────────────────────────
 
   static HypnogramMetrics hypnogramMetrics(SleepSession session) {
-    final segs = [...session.stages]..sort((a, b) => a.start.compareTo(b.start));
+    final segs = [...session.stages]
+      ..sort((a, b) => a.start.compareTo(b.start));
     final tib = math.max(0, session.end - session.start);
     final sleepSegs = segs
-        .where((s) => s.stage == 'light' || s.stage == 'deep' || s.stage == 'rem')
+        .where(
+            (s) => s.stage == 'light' || s.stage == 'deep' || s.stage == 'rem')
         .toList();
     var tst = 0, deepS = 0, remS = 0, lightS = 0;
     for (final s in sleepSegs) {
@@ -1963,8 +2064,9 @@ class AdvancedSleepStager {
       sol = null; // never observed sleep — no latency to report
     }
     final remSegs = sleepSegs.where((s) => s.stage == 'rem').toList();
-    final remLatency =
-        remSegs.isNotEmpty ? (remSegs.first.start - onset).toDouble() : double.nan;
+    final remLatency = remSegs.isNotEmpty
+        ? (remSegs.first.start - onset).toDouble()
+        : double.nan;
     var waso = 0, disturbances = 0;
     for (final s in segs.where((s) => s.stage == 'wake')) {
       final w0 = math.max(s.start, onset);
@@ -1998,8 +2100,10 @@ class AdvancedSleepStager {
 
   static const double _rrMinMs = 300, _rrMaxMs = 2000;
 
-  static List<double> _rangeFilter(List<double> rr) =>
-      [for (final v in rr) if (v >= _rrMinMs && v <= _rrMaxMs) v];
+  static List<double> _rangeFilter(List<double> rr) => [
+        for (final v in rr)
+          if (v >= _rrMinMs && v <= _rrMaxMs) v
+      ];
 
   static double? _rmssdRaw(List<double> nn) {
     if (nn.length < 2) return null;
@@ -2020,7 +2124,8 @@ class AdvancedSleepStager {
     final lower = position.toInt();
     final upper = math.min(lower + 1, n - 1);
     final frac = position - lower;
-    return sortedValues[lower] + frac * (sortedValues[upper] - sortedValues[lower]);
+    return sortedValues[lower] +
+        frac * (sortedValues[upper] - sortedValues[lower]);
   }
 
   static double _clampD(double x, double lo, double hi) =>
@@ -2045,8 +2150,8 @@ class _EpochGrid {
   final List<List<double>> rrBuckets;
   final List<List<double>> respBuckets;
   final List<bool> ckFlags;
-  const _EpochGrid(this.edges, this.nEpochs, this.counts, this.hr, this.moveFrac,
-      this.rrBuckets, this.respBuckets,
+  const _EpochGrid(this.edges, this.nEpochs, this.counts, this.hr,
+      this.moveFrac, this.rrBuckets, this.respBuckets,
       [this.ckFlags = const []]);
 }
 
