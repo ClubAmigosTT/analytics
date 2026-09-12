@@ -13,7 +13,8 @@ void main() {
     });
 
     test('personal weight grows with nights and hard-caps at 0.5', () {
-      expect(const SleepUserProfile(nights: 7).personalWeight, closeTo(0.25, 1e-9));
+      expect(const SleepUserProfile(nights: 7).personalWeight,
+          closeTo(0.25, 1e-9));
       expect(const SleepUserProfile(nights: 14).personalWeight, 0.5);
       expect(const SleepUserProfile(nights: 40).personalWeight, 0.5);
     });
@@ -36,7 +37,8 @@ void main() {
     test('subsequent folds EWMA toward new observations, absent axis untouched',
         () {
       var p = const SleepUserProfile().fold(
-        const SleepNightObservation(epochs: 700, hrSleepMedian: 60, rmssdMed: 40),
+        const SleepNightObservation(
+            epochs: 700, hrSleepMedian: 60, rmssdMed: 40),
       );
       // Second night: higher HR median, and NO rmssd observed this night.
       p = p.fold(const SleepNightObservation(epochs: 700, hrSleepMedian: 70));
@@ -53,7 +55,8 @@ void main() {
         p = p.fold(const SleepNightObservation(epochs: 700, hrSleepMedian: 60));
       }
       // A single deviating night barely moves a settled profile.
-      final q = p.fold(const SleepNightObservation(epochs: 700, hrSleepMedian: 90));
+      final q =
+          p.fold(const SleepNightObservation(epochs: 700, hrSleepMedian: 90));
       final a = 2.0 / (14 + 1);
       expect(q.hrSleepMedian, closeTo(60 * (1 - a) + 90 * a, 1e-6));
     });
@@ -111,6 +114,22 @@ void main() {
         lessThan(5.0),
         reason: 'a consistent profile must not swing staging wildly',
       );
+    });
+
+    test('cardio staging exposes one explainable row per scored epoch', () {
+      const n = 3 * 3600;
+      final hr = List<double>.filled(n, 58.0);
+      final accel = <AccelSample>[
+        for (var i = 0; i < n; i++) AccelSample(i * 1000.0, 0, 0, 1.0),
+      ];
+      final result = cardioStager(hr, accel);
+      expect(result.diagnostics.length, result.base.stages.length);
+      expect(result.diagnostics, isNotEmpty);
+      final first = result.diagnostics.first.toJson();
+      expect(first['epoch'], 0);
+      expect(first['stage'], isA<String>());
+      expect(first['reason'], isA<String>());
+      expect(first.containsKey('hr_up'), isTrue);
     });
   });
 }

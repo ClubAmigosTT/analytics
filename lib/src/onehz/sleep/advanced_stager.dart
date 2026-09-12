@@ -115,6 +115,10 @@ class SleepSession {
   final List<StageSegment> stages;
   final int? restingHr; // lowest 5-min rolling-mean HR (bpm)
   final double? avgHrv; // mean RMSSD over 5-min windows (ms)
+  /// Explainability rows emitted by the cardio stager. This is an additive
+  /// diagnostic side-channel; metrics and stage labels continue to use
+  /// [stages] exclusively.
+  final List<Map<String, dynamic>> diagnostics;
   const SleepSession({
     required this.start,
     required this.end,
@@ -122,6 +126,7 @@ class SleepSession {
     required this.stages,
     required this.restingHr,
     required this.avgHrv,
+    this.diagnostics = const <Map<String, dynamic>>[],
   });
 }
 
@@ -401,9 +406,10 @@ class AdvancedSleepStager {
         continue;
       }
 
+      final diagnostics = <Map<String, dynamic>>[];
       final stages = switch (method) {
         StagingMethod.cardio =>
-          _stageSessionCardio(p.start, p.end, grav, hrS, rrS),
+          _stageSessionCardio(p.start, p.end, grav, hrS, rrS, diagnostics),
         StagingMethod.v2 => _stageSessionV2(p.start, p.end, grav, hrS, rrS),
         StagingMethod.v1 =>
           _stageSession(p.start, p.end, grav, hrS, rrS, respS),
@@ -417,6 +423,7 @@ class AdvancedSleepStager {
         stages: stages,
         restingHr: resting,
         avgHrv: avgHrv,
+        diagnostics: diagnostics,
       ));
 
       if (!continuesChain) {
@@ -454,9 +461,10 @@ class AdvancedSleepStager {
     List<RespTs> resp = const [],
     StagingMethod method = StagingMethod.cardio,
   }) {
+    final diagnostics = <Map<String, dynamic>>[];
     final stages = switch (method) {
       StagingMethod.cardio =>
-        _stageSessionCardio(startSec, endSec, gravity, hr, rr),
+        _stageSessionCardio(startSec, endSec, gravity, hr, rr, diagnostics),
       StagingMethod.v2 => _stageSessionV2(startSec, endSec, gravity, hr, rr),
       StagingMethod.v1 =>
         _stageSession(startSec, endSec, gravity, hr, rr, resp),
@@ -468,6 +476,7 @@ class AdvancedSleepStager {
       stages: stages,
       restingHr: _sessionRestingHR(startSec, endSec, hr),
       avgHrv: _sessionAvgHRV(startSec, endSec, rr),
+      diagnostics: diagnostics,
     );
   }
 
@@ -1496,7 +1505,8 @@ class AdvancedSleepStager {
   /// contract [stageWindow] documents. They must NEVER come back as 'light',
   /// which is what a zero-data window used to report for its entire length.
   static List<StageSegment> _stageSessionCardio(
-      int start, int end, List<GravTs> grav, List<HrTs> hr, List<RrTs> rr) {
+      int start, int end, List<GravTs> grav, List<HrTs> hr, List<RrTs> rr,
+      [List<Map<String, dynamic>>? diagnostics]) {
     final span = end - start;
     if (span <= 0) return const <StageSegment>[];
     final epSec = epochS.round();
@@ -1585,6 +1595,18 @@ class AdvancedSleepStager {
           final hi = e == nEpoch - 1 ? j : math.min(j, lo + epSec);
           for (var k = lo; k < hi; k++) {
             perSec[k] = label;
+          }
+        }
+        if (diagnostics != null && result.diagnostics.isNotEmpty) {
+          for (final d in result.diagnostics) {
+            final lo = i + d.epoch * epSec;
+            final hi = d.epoch == nEpoch - 1 ? j : math.min(j, lo + epSec);
+            final row = <String, dynamic>{
+              ...d.toJson(),
+              'start': start + lo,
+              'end': start + hi,
+            };
+            diagnostics.add(row);
           }
         }
       }

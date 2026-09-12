@@ -273,6 +273,11 @@ class SleepSegmentation {
   /// 0 when absent.
   final double confidence;
 
+  /// Per-epoch cardio-stager evidence for diagnostics and replay. These rows
+  /// are never consumed by accounting; they explain the already-computed
+  /// labels and may be empty for legacy/v1/v2 staging paths.
+  final List<Map<String, dynamic>> diagnostics;
+
   /// Machine-readable cause when [present] is false and the cause is known
   /// (currently: too little of the window was observed). Null when a caller
   /// should say nothing more than "no qualifying sleep". Never render a bare
@@ -296,6 +301,7 @@ class SleepSegmentation {
     required this.sustainedAwakenings,
     required this.longestSleepRunSec,
     required this.confidence,
+    this.diagnostics = const <Map<String, dynamic>>[],
     this.absenceReason,
   });
 
@@ -317,6 +323,7 @@ class SleepSegmentation {
     sustainedAwakenings: null,
     longestSleepRunSec: null,
     confidence: 0,
+    diagnostics: const <Map<String, dynamic>>[],
   );
 
   /// Absent BECAUSE the window was too thinly observed to stand behind — the
@@ -338,6 +345,7 @@ class SleepSegmentation {
         sustainedAwakenings: null,
         longestSleepRunSec: null,
         confidence: 0,
+        diagnostics: const <Map<String, dynamic>>[],
         absenceReason: reason,
       );
 
@@ -379,6 +387,7 @@ class SleepSegmentation {
         'longest_sleep_run_sec': longestSleepRunSec,
         'epochs': stages.length,
         'confidence': round6(confidence),
+        if (diagnostics.isNotEmpty) 'epoch_diagnostics': diagnostics,
         if (absenceReason != null) 'absence_reason': absenceReason,
         // Deep is a LOW-CONFIDENCE, unvalidated HR-depth overlay (see
         // walch_stager STEP 2). Carry the flag so the UI badges it honestly.
@@ -682,6 +691,9 @@ SleepSegmentation segmentSleep(
   final windowConf = (inBed / (7 * 3600)).clamp(0.3, 0.95);
   final conf =
       ((windowConf + stagingConf) / 2.0).clamp(0.0, kMaxSleepConfidence);
+  final diagnostics = <Map<String, dynamic>>[
+    for (final session in chosen.sessions) ...session.diagnostics,
+  ];
 
   return SleepSegmentation(
     window: SleepWindow(
@@ -717,6 +729,7 @@ SleepSegmentation segmentSleep(
     sustainedAwakenings: sustainedAwakenings,
     longestSleepRunSec: longestSleepRun,
     confidence: conf,
+    diagnostics: diagnostics,
   );
 }
 
