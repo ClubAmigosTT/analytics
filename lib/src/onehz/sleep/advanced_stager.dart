@@ -327,7 +327,16 @@ class AdvancedSleepStager {
     final grav = [...gravity]..sort((a, b) => a.ts.compareTo(b.ts));
     if (grav.length < 2) return const [];
     final hrS = [...hr]..sort((a, b) => a.ts.compareTo(b.ts));
-    final rrS = [...rr]..sort((a, b) => a.ts.compareTo(b.ts));
+    // Multiple beats share a rounded second. Dart's sort is not stable:
+    // appending unrelated daytime beats could reorder the NIGHT's tied beats,
+    // changing successive RR differences, HRV and stages. Preserve acquisition
+    // order for equal timestamps, including when the input grows.
+    final rrOrder = List<int>.generate(rr.length, (i) => i)
+      ..sort((a, b) {
+        final byTime = rr[a].ts.compareTo(rr[b].ts);
+        return byTime != 0 ? byTime : a.compareTo(b);
+      });
+    final rrS = [for (final i in rrOrder) rr[i]];
     final respS = [...resp]..sort((a, b) => a.ts.compareTo(b.ts));
 
     final baseline = detectionHrBaseline != null &&
