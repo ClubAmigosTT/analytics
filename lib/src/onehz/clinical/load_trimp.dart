@@ -23,6 +23,7 @@
 // prediction.
 
 import 'dart:math' as math;
+
 import '../types.dart';
 import '../util.dart';
 
@@ -157,6 +158,93 @@ double? dailyQuietWakingHrr(
   return q;
 }
 
+/// Quiet waking reference from measured low-motion minutes. The caller must
+/// align the motion mask with the waking HR minutes and omit unmeasured motion.
+/// A minimum of two hours keeps a short seated spell from defining a day.
+double? lowMotionWakingHrr(
+  List<double> hrPerMin,
+  List<bool> lowMotion, {
+  required double? restingHr,
+  required double? maxHr,
+  int minMinutes = 120,
+}) {
+  if (hrPerMin.length != lowMotion.length) return null;
+  return dailyQuietWakingHrr(
+    [
+      for (var i = 0; i < hrPerMin.length; i++)
+        if (lowMotion[i]) hrPerMin[i],
+    ],
+    restingHr: restingHr,
+    maxHr: maxHr,
+    minMinutes: minMinutes,
+  );
+}
+
+/// Cumulative cardiovascular load above a personal low-motion reference.
+/// Each measured minute can add load; subsequent quiet minutes cannot erase it.
+/// The small reserve band rejects normal minute-to-minute wrist-HR variation.
+/// This is HR load, not a claim that steps or exercise occurred.
+double? personalStrainLoad(
+  List<double> hrPerMin, {
+  required double? restingHr,
+  required double? maxHr,
+  required double? quietHrr,
+  required bool female,
+  double reserveBand = 0.05,
+}) {
+  if (restingHr == null ||
+      maxHr == null ||
+      quietHrr == null ||
+      !restingHr.isFinite ||
+      !maxHr.isFinite ||
+      !quietHrr.isFinite ||
+      maxHr <= restingHr ||
+      quietHrr <= 0 ||
+      quietHrr > maxQuietHrr ||
+      !reserveBand.isFinite ||
+      reserveBand < 0 ||
+      reserveBand > 0.2 ||
+      hrPerMin.isEmpty)
+    return null;
+  final reserve = maxHr - restingHr;
+  final floor = math.min(1.0, quietHrr + reserveBand);
+  final base = floor * StrainScorer.banisterY(floor, female: female);
+  var load = 0.0;
+  for (final hr in hrPerMin) {
+    if (!hr.isFinite || hr <= 0) continue;
+    final x = math.min(1.0, math.max(0.0, (hr - restingHr) / reserve));
+    if (x > floor) {
+      load += x * StrainScorer.banisterY(x, female: female) - base;
+    }
+  }
+  return load;
+}
+
+double? personalStrainScore(
+  List<double> hrPerMin, {
+  required double? restingHr,
+  required double? maxHr,
+  required double? quietHrr,
+  required bool female,
+}) {
+  final load = personalStrainLoad(
+    hrPerMin,
+    restingHr: restingHr,
+    maxHr: maxHr,
+    quietHrr: quietHrr,
+    female: female,
+  );
+  if (load == null) return null;
+  return personalStrainScoreFromLoad(load);
+}
+
+double personalStrainScoreFromLoad(double load) {
+  final u = math.min(1.0, load / maximalNetTrimp);
+  return 21.0 *
+      math.log(1 + u * (strainCurvature - 1)) /
+      math.log(strainCurvature);
+}
+
 /// Net TRIMP — earned ABOVE the quiet-waking baseline — that defines a maximal
 /// day and maps to the top of the scale.
 ///
@@ -252,7 +340,8 @@ double strainScore(
       trimp - baselineTrimp(wakeMinutes, quietHrr: quietHrr, female: female);
   if (net <= 0) return 0.0;
   final u = math.min(1.0, net / maximalNetTrimp);
-  final s = 21.0 *
+  final s =
+      21.0 *
       math.log(1 + u * (strainCurvature - 1)) /
       math.log(strainCurvature);
   return math.min(21.0, math.max(0.0, s));
@@ -289,7 +378,8 @@ Metric<double> strainScoreMetric(
     return const Metric<double>.absent(
       tier: Tier.estimate,
       inputs_used: inputs,
-      note: 'strain needs a finite wake window (minutes > 0) — it is what the '
+      note:
+          'strain needs a finite wake window (minutes > 0) — it is what the '
           'quiet-waking baseline is subtracted over',
     );
   }
@@ -297,7 +387,8 @@ Metric<double> strainScoreMetric(
     return const Metric<double>.absent(
       tier: Tier.estimate,
       inputs_used: inputs,
-      note: 'strain needs this user\'s own quiet-waking HRR to subtract, '
+      note:
+          'strain needs this user\'s own quiet-waking HRR to subtract, '
           'finite and > 0; without it the cost of simply being awake reads '
           'as training load',
     );
@@ -310,18 +401,24 @@ Metric<double> strainScoreMetric(
     return const Metric<double>.absent(
       tier: Tier.estimate,
       inputs_used: inputs,
-      note: 'quiet-waking HRR above $maxQuietHrr is not quiet waking — that '
+      note:
+          'quiet-waking HRR above $maxQuietHrr is not quiet waking — that '
           'is ACSM\'s moderate-intensity floor, so the level would subtract '
           'the day\'s own training away',
     );
   }
   return Metric<double>(
-    value: strainScore(trimp,
-        wakeMinutes: wakeMinutes, quietHrr: quietHrr, female: female),
+    value: strainScore(
+      trimp,
+      wakeMinutes: wakeMinutes,
+      quietHrr: quietHrr,
+      female: female,
+    ),
     confidence: 0.6,
     tier: Tier.estimate,
     inputs_used: inputs,
-    note: 'headline 0–21 strain = log map of TRIMP earned above the '
+    note:
+        'headline 0–21 strain = log map of TRIMP earned above the '
         'quiet-waking baseline; wrist-HR estimate',
   );
 }
@@ -490,9 +587,13 @@ class StrainScorer {
   }
 
   /// Banister exponential TRIMP: Σ duration(min) × x × y(x), y per [banisterY].
-  static double banisterTRIMP(List<double> bpm, double restingHR,
-      double hrReserve, List<double> durationsMin,
-      {bool female = false}) {
+  static double banisterTRIMP(
+    List<double> bpm,
+    double restingHR,
+    double hrReserve,
+    List<double> durationsMin, {
+    bool female = false,
+  }) {
     var acc = 0.0;
     for (var i = 0; i < bpm.length; i++) {
       final dur = i < durationsMin.length
@@ -510,8 +611,10 @@ class StrainScorer {
   /// TRIMP ≤ 0 → 0; above the D−1 ceiling the score is CLAMPED at [maxStrain]
   /// (it used to run off the top of its own documented range: TRIMP 14400 →
   /// 107.8, while the sibling [strainScore] clamped correctly).
-  static double trimpToStrain(double trimp,
-      {double denominator = strainDenominator}) {
+  static double trimpToStrain(
+    double trimp, {
+    double denominator = strainDenominator,
+  }) {
     if (trimp <= 0) return 0;
     final value = maxStrain * math.log(trimp + 1.0) / math.log(denominator);
     final clamped = math.min(maxStrain, math.max(0.0, value));
@@ -567,8 +670,13 @@ class StrainScorer {
     // `banisterTRIMP` credits `fallbackSampleMin` per sample when handed an
     // empty list, which is the fabricated 1 s this abstention exists to stop.
     if (durations.isEmpty) return null;
-    final trimp = banisterTRIMP(bpm, restingHR, effMax - restingHR, durations,
-        female: female);
+    final trimp = banisterTRIMP(
+      bpm,
+      restingHR,
+      effMax - restingHR,
+      durations,
+      female: female,
+    );
     return trimpToStrain(trimp, denominator: denominator);
   }
 }
@@ -621,7 +729,8 @@ Metric<double> trimpStrain(
     confidence: 0.6,
     tier: Tier.estimate,
     inputs_used: inputs,
-    note: 'Banister TRIMP → 0–100 strain '
+    note:
+        'Banister TRIMP → 0–100 strain '
         '(100·ln(TRIMP+1)/ln(7201)); wrist-HR ESTIMATE, not clinical',
   );
 }
@@ -632,10 +741,10 @@ class LoadState {
   final double tsb; // form = ctl - atl
   const LoadState(this.ctl, this.atl, this.tsb);
   Map<String, dynamic> toJson() => {
-        'ctl': round6(ctl),
-        'atl': round6(atl),
-        'tsb': round6(tsb),
-      };
+    'ctl': round6(ctl),
+    'atl': round6(atl),
+    'tsb': round6(tsb),
+  };
 }
 
 /// Minimum days of daily-TRIMP history before CTL/ATL/TSB are reported.
@@ -656,11 +765,13 @@ const int ctlAtlMinDays = 14;
 /// both accumulators with the MEAN of the first [primeDays] observed days
 /// (never a single day, never future days) before running the EWMA over the
 /// remainder.
-Metric<LoadState> ctlAtlTsb(List<double> dailyTrimp,
-    {double ctlDays = 42,
-    double atlDays = 7,
-    int minDays = ctlAtlMinDays,
-    int primeDays = 7}) {
+Metric<LoadState> ctlAtlTsb(
+  List<double> dailyTrimp, {
+  double ctlDays = 42,
+  double atlDays = 7,
+  int minDays = ctlAtlMinDays,
+  int primeDays = 7,
+}) {
   const inputs = ['daily_trimp'];
   if (dailyTrimp.length < minDays) {
     return Metric<LoadState>.absent(

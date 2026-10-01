@@ -76,6 +76,7 @@ class Calories {
     workoutAge: 0.0740,
     workoutAlpha: -20.4022,
   );
+
   /// INTERPOLATED, NOT PUBLISHED (audit MOT-10). Keytel 2005 and revised
   /// Harris–Benedict each publish exactly two sex sets; every constant below is
   /// the element-wise ARITHMETIC MEAN of [male] and [female]
@@ -281,36 +282,85 @@ class Calories {
   /// case and for the same reason: no gate, no honest energy figure. It is
   /// never the zeros, because a zero here reads downstream as a measured day
   /// with nothing in it.
-  /// METs for a measured walking cadence, or null when the cadence carries no
-  /// honest MET.
+  /// METs at the heuristic moderate-to-vigorous walking thresholds, or null
+  /// below the moderate-intensity floor.
   ///
-  /// Tudor-Locke et al. 2019 (CADENCE-Adults, Int J Behav Nutr Phys Act 16:8):
-  /// heuristic cadence thresholds of 100, 110, 120 and 130 steps/min
-  /// correspond to 3, 4, 5 and 6 METs in adults. Linear between the anchors;
-  /// CLAMPED at both ends of the fitted range rather than extrapolated —
-  /// below 100 spm is under the study's own moderate floor (the same boundary
-  /// [activeHRRFraction] holds on the HR side, ACSM moderate), and above
-  /// 130 spm is running, which drives HR over the flex gate and bills there.
+  /// Tudor-Locke et al. (CADENCE-Adults) use 100, 110, 120 and 130 steps/min
+  /// as approximate 3, 4, 5 and 6 MET thresholds. These are intensity labels,
+  /// not a floor for all calories burned while walking. Daily energy uses the
+  /// separate cadence metabolic equation below so slower measured walking can
+  /// contribute a modest surplus too.
   static double? metFromCadenceSpm(double cadenceSpm) {
     if (!cadenceSpm.isFinite || cadenceSpm < 100.0) return null;
     final met = 3.0 + (cadenceSpm - 100.0) * 0.1;
     return met > 6.0 ? 6.0 : met;
   }
 
+  /// Net kcal/min for one minute of measured level walking at [cadenceSpm].
+  ///
+  /// Uses the Full-height cadence metabolic equation from Moore et al. 2021
+  /// (doi:10.1249/MSS.0000000000002430), developed against indirect
+  /// calorimetry in 235 adults aged 21–84:
+  ///
+  ///   VO2 = -0.4367 + 0.001430·cadence² - 0.001455·age·cadence
+  ///         - 0.000009012·BMI·cadence² + 0.0008086·age·height(cm)
+  ///
+  /// VO2 is in mL/kg/min. It is converted to gross kcal/min using 5 kcal per
+  /// litre of oxygen, then the user's Mifflin basal rate is subtracted. The
+  /// result is clipped at zero: this method adds only measured movement above
+  /// the same resting floor used by [dailyEnergy].
+  ///
+  /// The study fitted walking bouts, not isolated footfalls. The 30–120
+  /// steps/min bounds are conservative implementation limits, not thresholds
+  /// published by the study: lower counts are treated as sparse/intermittent
+  /// movement, while faster minutes are left to the heart-rate model rather
+  /// than extrapolating near the walk-to-run transition. Null means the
+  /// profile or cadence is outside this estimation domain.
+  ///
+  /// The equation was calibrated on level treadmill bouts. Real terrain,
+  /// carrying loads and individual metabolic variation are not represented, so
+  /// this remains an estimate, not calorimetry.
+  static double? walkingActiveKcalPerMinFromCadence(
+    double cadenceSpm, {
+    required WorkoutUserProfile profile,
+  }) {
+    if (!cadenceSpm.isFinite || cadenceSpm < 30.0 || cadenceSpm > 120.0) {
+      return null;
+    }
+    final weightKg = profile.weightKg;
+    final heightCm = profile.heightCm;
+    final age = profile.age;
+    if (!weightKg.isFinite ||
+        weightKg <= 0 ||
+        !heightCm.isFinite ||
+        heightCm <= 0 ||
+        !age.isFinite ||
+        age < 21 ||
+        age > 84) {
+      return null;
+    }
+    final bmi = weightKg / math.pow(heightCm / 100.0, 2);
+    final cadence2 = cadenceSpm * cadenceSpm;
+    final vo2 = -0.4367 +
+        1.430e-3 * cadence2 -
+        1.455e-3 * age * cadenceSpm -
+        9.012e-6 * bmi * cadence2 +
+        8.086e-4 * age * heightCm;
+    if (!vo2.isFinite || vo2 <= 0) return null;
+    final grossKcalPerMin = vo2 * weightKg * 0.005;
+    final basalPerMin =
+        mifflinBmrKcalDay(weightKg, heightCm, age, profile.sex) / 1440.0;
+    final active = grossKcalPerMin - basalPerMin;
+    return active.isFinite ? math.max(0.0, active) : null;
+  }
+
   /// [cadenceSpmPerMin], when given, must be index-aligned with [hrPerMin]
-  /// (one entry per minute; null = no measured cadence that minute — which is
-  /// most minutes: the pedometer that can resolve gait only runs while the
-  /// phone holds the live link). It fills the exact gap MOT-02 knowingly
-  /// opened: the HR-flex gate refuses everything below the ACSM moderate
-  /// floor because Keytel has no fitted data there, so a walk at 95 bpm
-  /// added ZERO active kcal for its whole duration. Cadence is the one signal
-  /// here that measures walking (MT-05 showed the 1 Hz accel cannot), and
-  /// CADENCE-Adults prices it: a minute the HR gate refuses, whose cadence is
-  /// at/above the study's own moderate floor, bills (MET − 1) basal-minutes
-  /// of surplus via [metFromCadenceSpm]. A minute the HR gate accepts bills
-  /// by HR alone — HR sees intensity cadence cannot, and a minute is never
-  /// billed twice. The `walking` component of the result is that surplus,
-  /// already included in `active`.
+  /// (one entry per minute; null = no measured cadence that minute). It fills
+  /// the low-intensity gap left by the HR-flex gate: a measured walk below the
+  /// Keytel exercise domain is priced by the profile-based cadence metabolic
+  /// equation, not by the moderate-intensity threshold. A minute the HR gate
+  /// accepts bills by HR alone, so the two signals never double-count a
+  /// minute. The `walking` component is that surplus, already in `active`.
   static ({double total, double active, double basal, double walking})?
       dailyEnergy(
     List<double> hrPerMin, {
@@ -355,12 +405,15 @@ class Calories {
         continue; // HR billed the minute — cadence never doubles it.
       }
       // Below flex (or no HR at all — measured gait stands on its own):
-      // a measured walking cadence prices the minute the HR gate refused.
+      // measured walking cadence prices the minute the HR gate refused.
       final cad = cadenceSpmPerMin?[i];
       if (cad == null) continue;
-      final met = metFromCadenceSpm(cad);
-      if (met == null) continue;
-      walking += (met - 1.0) * basalPerMin;
+      final walkingActive = walkingActiveKcalPerMinFromCadence(
+        cad,
+        profile: profile,
+      );
+      if (walkingActive == null) continue;
+      walking += walkingActive;
     }
     active += walking;
     final basal = basalPerMin * dayMinutes;

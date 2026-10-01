@@ -88,7 +88,97 @@ class CardioStagerResult {
   final StagerResult base;
   final List<bool> deepFlag;
   final double confidence;
-  const CardioStagerResult(this.base, this.deepFlag, this.confidence);
+
+  /// Compact, explainable evidence for each 30-second epoch. This is a
+  /// diagnostic side-channel: it is never read by the classifier and cannot
+  /// change the published stage.
+  final List<CardioEpochDiagnostic> diagnostics;
+  const CardioStagerResult(
+    this.base,
+    this.deepFlag,
+    this.confidence, [
+    this.diagnostics = const <CardioEpochDiagnostic>[],
+  ]);
+}
+
+/// The evidence available to the transparent cardio stager for one epoch.
+/// These are estimates from a wrist, not a clinical label. Nullable features
+/// mean the feature was not measurable; zero is never used for absence.
+class CardioEpochDiagnostic {
+  final int epoch;
+  final double? hr;
+  final double? motion;
+  final double? hrSd;
+  final double? rmssd;
+  final double? sdnn;
+  final double? lfhf;
+  final double? rk;
+  final double? hrMedian;
+  final double? hrArousal;
+  final double? hrP25;
+  final double? remScore;
+  final double? deepScore;
+  final bool hrUp;
+  final bool bigMove;
+  final bool bigMoveWake;
+  final bool atonia;
+  final bool hrTowardWake;
+  final bool personalized;
+  final double personalWeight;
+  final String stage;
+  final String reason;
+
+  const CardioEpochDiagnostic({
+    required this.epoch,
+    required this.hr,
+    required this.motion,
+    required this.hrSd,
+    required this.rmssd,
+    required this.sdnn,
+    required this.lfhf,
+    required this.rk,
+    required this.hrMedian,
+    required this.hrArousal,
+    required this.hrP25,
+    required this.remScore,
+    required this.deepScore,
+    required this.hrUp,
+    required this.bigMove,
+    required this.bigMoveWake,
+    required this.atonia,
+    required this.hrTowardWake,
+    required this.personalized,
+    required this.personalWeight,
+    required this.stage,
+    required this.reason,
+  });
+
+  static num? _finite(double? v) => v == null || !v.isFinite ? null : v;
+
+  Map<String, dynamic> toJson() => {
+        'epoch': epoch,
+        'hr': _finite(hr),
+        'motion': _finite(motion),
+        'hr_sd': _finite(hrSd),
+        'rmssd': _finite(rmssd),
+        'sdnn': _finite(sdnn),
+        'lfhf': _finite(lfhf),
+        'rk': _finite(rk),
+        'hr_median': _finite(hrMedian),
+        'hr_arousal': _finite(hrArousal),
+        'hr_p25': _finite(hrP25),
+        'rem_score': _finite(remScore),
+        'deep_score': _finite(deepScore),
+        'hr_up': hrUp,
+        'big_move': bigMove,
+        'big_move_wake': bigMoveWake,
+        'atonia': atonia,
+        'hr_toward_wake': hrTowardWake,
+        'personalized': personalized,
+        'personal_weight': personalWeight,
+        'stage': stage,
+        'reason': reason,
+      };
 }
 
 const int _epochSec = 30;
@@ -794,6 +884,17 @@ CardioStagerResult classifyCardioEpochs(
   // ── classify ───────────────────────────────────────────────────────────────
   final stages = List<SleepStage>.filled(nEpoch, SleepStage.wake);
   final deepFlag = List<bool>.filled(nEpoch, false);
+  // Decision values captured before continuity post-processing. These arrays
+  // are diagnostic-only; the classifier below still writes the same labels.
+  final rawStages = List<SleepStage>.filled(nEpoch, SleepStage.wake);
+  final rawDeepFlags = List<bool>.filled(nEpoch, false);
+  final hrUpFor = List<bool>.filled(nEpoch, false);
+  final bigMoveFor = List<bool>.filled(nEpoch, false);
+  final bigMoveWakeFor = List<bool>.filled(nEpoch, false);
+  final atoniaFor = List<bool>.filled(nEpoch, false);
+  final hrTowardWakeFor = List<bool>.filled(nEpoch, false);
+  final remScores = List<double?>.filled(nEpoch, null);
+  final deepScores = List<double?>.filled(nEpoch, null);
   for (var e = 0; e < nEpoch; e++) {
     final hrMed = hrMedLocal[e];
     final hrArousal = hrArousalLocal[e];
@@ -813,8 +914,13 @@ CardioStagerResult classifyCardioEpochs(
     final bigPrev = e > 0 && bigMove(e - 1);
     final bigMoveWake =
         bigMove(e) && ((!hr[e].isNaN && hr[e] >= hrMed) || bigPrev);
+    hrUpFor[e] = hrUp;
+    bigMoveFor[e] = bigMove(e);
+    bigMoveWakeFor[e] = bigMoveWake;
     if (hrUp || bigMoveWake) {
       stages[e] = SleepStage.wake;
+      rawStages[e] = stages[e];
+      rawDeepFlags[e] = deepFlag[e];
       continue;
     }
     // Asleep. REM vs NREM, and deep-within-NREM, are now scored as WEIGHTED
@@ -892,6 +998,8 @@ CardioStagerResult classifyCardioEpochs(
       (sdnnZ, -_wDeepSdnn),
       (lfhfZ, -_wDeepLfhf),
     ]);
+    remScores[e] = remScore;
+    deepScores[e] = deepScore;
 
     // Atonia and the HR floor are RETAINED as gates, not folded into the score:
     // they are not weak evidence for REM, they are preconditions. A large
@@ -899,6 +1007,8 @@ CardioStagerResult classifyCardioEpochs(
     // quiescent cardiac trough, so HR below the local p25 rules it out too.
     final atonia = !bigMove(e);
     final hrTowardWake = !hr[e].isNaN && hr[e] >= hrP25Local[e];
+    atoniaFor[e] = atonia;
+    hrTowardWakeFor[e] = hrTowardWake;
     if (remScore != null && remScore > remScoreCut && atonia && hrTowardWake) {
       stages[e] = SleepStage.rem;
     } else {
@@ -907,6 +1017,8 @@ CardioStagerResult classifyCardioEpochs(
       // overlay, not an EEG slow-wave measurement).
       deepFlag[e] = deepScore != null && deepScore > deepScoreCut;
     }
+    rawStages[e] = stages[e];
+    rawDeepFlags[e] = deepFlag[e];
   }
 
   // ── post-process: median-filter flicker → Webster continuity → consolidate ──
@@ -925,6 +1037,64 @@ CardioStagerResult classifyCardioEpochs(
     if (deepFlag[e] && sm[e] != SleepStage.nrem) deepFlag[e] = false;
   }
   _mergeShortDeep(deepFlag, sm, epochSec);
+
+  // Keep the decision trace beside the final labels. The raw gate values are
+  // captured before continuity post-processing, so an epoch can distinguish
+  // "FC arousal" from "the continuity pass changed this label". This is
+  // deliberately an explainability channel only; no downstream calculation
+  // consumes it.
+  final diagnostics = <CardioEpochDiagnostic>[];
+  String stageName(SleepStage s, bool deep) => switch (s) {
+        SleepStage.wake => 'wake',
+        SleepStage.rem => 'rem',
+        SleepStage.nrem => deep ? 'deep' : 'light',
+      };
+  String reasonFor(int e, SleepStage raw, bool rawDeep) {
+    final finalStage = stageName(sm[e], deepFlag[e]);
+    if (finalStage != stageName(raw, rawDeep)) return 'continuity_postprocess';
+    if (raw == SleepStage.wake) {
+      if (hrUpFor[e]) return 'heart_rate_arousal';
+      if (bigMoveWakeFor[e]) return 'movement_with_heart_rate_lift';
+      if (bigMoveFor[e]) return 'sustained_large_movement';
+      if (hr[e].isNaN) return 'no_heart_rate_for_wake_gate';
+      return 'wake_gate';
+    }
+    if (raw == SleepStage.rem) return 'rem_score_and_gates';
+    if (rawDeep) return 'deep_score_overlay';
+    if (hr[e].isNaN) return 'no_heart_rate_nrem_fallback';
+    return 'nrem_fallback';
+  }
+
+  for (var e = 0; e < nEpoch; e++) {
+    final raw = rawStages[e];
+    final rawDeep = rawDeepFlags[e];
+    diagnostics.add(
+      CardioEpochDiagnostic(
+        epoch: e,
+        hr: hr[e].isNaN ? null : hr[e],
+        motion: motion[e],
+        hrSd: hrSd[e] > 0 ? hrSd[e] : null,
+        rmssd: rmssd[e],
+        sdnn: sdnn[e],
+        lfhf: lfhf[e],
+        rk: rk[e],
+        hrMedian: hrMedLocal[e],
+        hrArousal: hrArousalLocal[e],
+        hrP25: hrP25Local[e],
+        remScore: remScores[e],
+        deepScore: deepScores[e],
+        hrUp: hrUpFor[e],
+        bigMove: bigMoveFor[e],
+        bigMoveWake: bigMoveWakeFor[e],
+        atonia: atoniaFor[e],
+        hrTowardWake: hrTowardWakeFor[e],
+        personalized: profile != null && _pw > 0,
+        personalWeight: _pw,
+        stage: stageName(sm[e], deepFlag[e]),
+        reason: reasonFor(e, raw, rawDeep),
+      ),
+    );
+  }
 
   // ── record this night's baselines for the rolling per-user profile (P2) ─────
   // Only when the edge armed recording AND the staged span is a real sleep
@@ -985,6 +1155,7 @@ CardioStagerResult classifyCardioEpochs(
     ),
     deepFlag,
     conf,
+    diagnostics,
   );
 }
 
