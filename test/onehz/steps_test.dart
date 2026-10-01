@@ -220,7 +220,8 @@ void main() {
       expect(stepsAt(40, 600, fs: 50), 399);
     });
 
-    test('slower than 0.5 steps/s is rejected — at the buffer\'s REAL rate', () {
+    test('slower than 0.5 steps/s is rejected — at the buffer\'s REAL rate',
+        () {
       // This is the case that proves the bounds are computed from the sample
       // rate rather than a hardcoded 100. `maxMinTimeout` is 120 SAMPLES, so
       // it already covers the slow end at 100 Hz but stretches to 2.4 s at
@@ -869,8 +870,8 @@ void main() {
     test('#43: the day and the bout bill the same minute the same way', () {
       // They used to disagree by 8–35 bpm: the day gated at 0.65·HRmax, the
       // bout at rest + 0.30·HRR. Same stream, same minute, two answers.
-      const profile = WorkoutUserProfile(
-          weightKg: 72, heightCm: 178, age: 34, sex: 'male');
+      const profile =
+          WorkoutUserProfile(weightKg: 72, heightCm: 178, age: 34, sex: 'male');
       const hrmax = 184.2, rhr = 55.0;
       final gate = Calories.activeGateHr(hrmax, rhr)!;
       expect(gate, closeTo(106.68, 0.01));
@@ -904,21 +905,20 @@ void main() {
           reason: 'ACSM moderate floor: 40 % HRR ≡ 64 % HRmax');
     });
 
-    group('walking cadence term (CADENCE-Adults)', () {
+    group('walking cadence term (cadence metabolic equation)', () {
       // MOT-02 knowingly traded walking away: HR-flex bills nothing below the
       // ACSM moderate floor because Keytel has no fitted data there, and a
       // walk at 95 bpm added ZERO active kcal for its entire duration (edge
       // report: "Walking calories are not counted"). MT-05 established the
       // 1 Hz accel cannot fill that gap. MEASURED CADENCE can: it is the one
-      // gait signal the platform actually has (the 100 Hz pedometer), and
-      // CADENCE-Adults publishes the cadence↔MET line for exactly this
-      // region. Minutes the HR gate refuses are billed from cadence instead —
-      // never both, and never from a cadence nobody measured.
-      const profile = WorkoutUserProfile(
-          weightKg: 80, heightCm: 180, age: 30, sex: 'male');
+      // gait signal the platform actually has (the 100 Hz pedometer). A
+      // cadence-based metabolic equation can price measured walking below the
+      // moderate-intensity threshold. Minutes the HR gate refuses are billed
+      // from cadence instead — never both, and never from a cadence nobody
+      // measured.
+      const profile =
+          WorkoutUserProfile(weightKg: 80, heightCm: 180, age: 30, sex: 'male');
       const hrmax = 190.0, rhr = 60.0;
-      final basalPerMin =
-          Calories.mifflinBmrKcalDay(80, 180, 30, 'male') / 1440.0;
 
       test('metFromCadenceSpm follows the published anchors', () {
         // Tudor-Locke 2019: heuristic thresholds 100/110/120/130 steps/min
@@ -935,7 +935,9 @@ void main() {
       });
 
       test('a below-gate walk with measured cadence finally bills', () {
-        // One hour at 95 bpm, 110 spm — the reported walk. HR-only: 0 kcal.
+        // One hour at 95 bpm, 110 spm. HR-only: 0 kcal. The CME predicts gross
+        // VO2 from the user's age, height, BMI and cadence; the same Mifflin
+        // basal minute already in the day is subtracted before crediting it.
         final hr = List<double>.filled(60, 95.0);
         final cad = List<double?>.filled(60, 110.0);
         final without = Calories.dailyEnergy(hr,
@@ -947,11 +949,52 @@ void main() {
             hrmax: hrmax,
             restingHr: rhr,
             cadenceSpmPerMin: cad)!;
-        // 4 METs → surplus (4−1)·basal per minute, 60 minutes.
-        expect(with_.walking, closeTo(60 * 3 * basalPerMin, 0.5));
+        final expectedPerMin =
+            Calories.walkingActiveKcalPerMinFromCadence(110, profile: profile)!;
+        expect(with_.walking, closeTo(60 * expectedPerMin, 1e-6));
         expect(with_.active, closeTo(with_.walking, 1e-9),
             reason: 'no HR-billed minutes in this hour');
         expect(with_.total, closeTo(with_.basal + with_.active, 1e-6));
+      });
+
+      test('the CME includes an adult user aged 53 and individual body data',
+          () {
+        const mother = WorkoutUserProfile(
+            weightKg: 70, heightCm: 160, age: 53, sex: 'female');
+        final cme =
+            Calories.walkingActiveKcalPerMinFromCadence(85, profile: mother);
+        expect(cme, closeTo(2.0611595114, 1e-8));
+
+        final hr = List<double>.filled(60, 95.0);
+        final day = Calories.dailyEnergy(hr,
+            profile: mother,
+            hrmax: 175,
+            restingHr: 65,
+            cadenceSpmPerMin: List<double?>.filled(60, 85))!;
+        expect(day.walking, closeTo(60 * cme!, 1e-6));
+        expect(day.active, greaterThan(0));
+        expect(day.total, closeTo(day.basal + day.active, 1e-6));
+
+        const other = WorkoutUserProfile(
+            weightKg: 70, heightCm: 180, age: 30, sex: 'male');
+        expect(
+          Calories.walkingActiveKcalPerMinFromCadence(85, profile: other),
+          isNot(closeTo(cme, 1e-3)),
+          reason: "same cadence adapts to the user's age, height and body mass",
+        );
+      });
+
+      test('walking equation abstains outside its conservative domain', () {
+        const older = WorkoutUserProfile(
+            weightKg: 70, heightCm: 160, age: 85, sex: 'female');
+        expect(Calories.walkingActiveKcalPerMinFromCadence(85, profile: older),
+            isNull);
+        expect(
+            Calories.walkingActiveKcalPerMinFromCadence(20, profile: profile),
+            isNull);
+        expect(
+            Calories.walkingActiveKcalPerMinFromCadence(121, profile: profile),
+            isNull);
       });
 
       test('a minute the HR gate bills is never ALSO billed from cadence', () {
@@ -968,16 +1011,16 @@ void main() {
         expect(both.walking, 0.0);
       });
 
-      test('an unmeasured or ambling minute stays basal', () {
+      test('an unmeasured or sparse minute stays basal', () {
         final hr = List<double>.filled(3, 95.0);
         final e = Calories.dailyEnergy(hr,
             profile: profile,
             hrmax: hrmax,
             restingHr: rhr,
-            cadenceSpmPerMin: [null, 85.0, double.infinity])!;
+            cadenceSpmPerMin: [null, 20.0, double.infinity])!;
         expect(e.walking, 0.0,
-            reason: 'null = nobody measured; 85 spm = below the moderate '
-                'floor; non-finite = not a measurement');
+            reason: 'null = nobody measured; 20 spm is too sparse for a '
+                'steady walking bout; non-finite = not a measurement');
         expect(e.active, 0.0);
       });
 
@@ -990,7 +1033,9 @@ void main() {
             hrmax: hrmax,
             restingHr: rhr,
             cadenceSpmPerMin: List<double?>.filled(30, 105.0))!;
-        expect(e.walking, closeTo(30 * 2.5 * basalPerMin, 0.5)); // 3.5 METs
+        final expected =
+            Calories.walkingActiveKcalPerMinFromCadence(105, profile: profile)!;
+        expect(e.walking, closeTo(30 * expected, 1e-6));
       });
 
       test('a misaligned cadence series is a caller bug, said out loud', () {
@@ -1034,8 +1079,8 @@ void main() {
       // `hr < NaN` is false for EVERY hr — so the day used to bill every single
       // minute at the Keytel active rate and publish a silently enormous kcal
       // figure instead of failing visibly.
-      const profile = WorkoutUserProfile(
-          weightKg: 80, heightCm: 180, age: 30, sex: 'male');
+      const profile =
+          WorkoutUserProfile(weightKg: 80, heightCm: 180, age: 30, sex: 'male');
       final hr = List<double>.filled(1440, 70.0);
       final ts = List<int>.generate(60, (i) => i);
 
@@ -1070,8 +1115,8 @@ void main() {
     });
 
     test('a non-finite HR sample is dropped, not billed', () {
-      const profile = WorkoutUserProfile(
-          weightKg: 80, heightCm: 180, age: 30, sex: 'male');
+      const profile =
+          WorkoutUserProfile(weightKg: 80, heightCm: 180, age: 30, sex: 'male');
       final clean = List<double>.filled(60, 150.0);
       final dirty = [...clean, double.nan, double.infinity];
       final a = Calories.dailyEnergy(clean,
