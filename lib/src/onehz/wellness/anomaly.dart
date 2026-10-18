@@ -220,7 +220,13 @@ List<AnomalyDay> multivariateAnomaly(
       if (cols[f].length < baseN) baseN = cols[f].length;
     }
     final gate = chiSqGate ?? _chiSq999(keep.length) * _madInflation(baseN);
-    final candidate = d2 > gate;
+    // d² is a quadratic form: it has a size but no direction, so the
+    // orientation above cancels out of it and a big IMPROVEMENT (RHR down,
+    // HRV up) crossed the gate exactly like illness — two great recovery
+    // nights raised the medical-class alert. Only a night whose oriented
+    // deviations net out in the "worse" direction is a candidate.
+    final netWorse = zc.fold(0.0, (s, v) => s + v) > 0;
+    final candidate = d2 > gate && netWorse;
     if (candidate) {
       run++;
     } else {

@@ -272,6 +272,22 @@ void main() {
       expect(flags, 0, reason: 'no false multivariate alarms on normal data');
     });
 
+    test('does NOT flag a run of unusually GOOD recovery nights', () {
+      final feats = <AnomalyFeatures>[
+        for (var i = 0; i < 20; i++) normalNight(),
+        // RHR well down and HRV well up for two nights: far from baseline,
+        // but in the healthy direction.
+        AnomalyFeatures(rhr: 48, hrv: 4.4, temp: 2000, resp: 14),
+        AnomalyFeatures(rhr: 48, hrv: 4.4, temp: 2000, resp: 14),
+      ];
+      final out = multivariateAnomaly(dates(feats.length), feats,
+          baselineDays: 28, minBaseline: 10, persistDays: 2);
+      expect(out[20].mahalanobis, isNotNull);
+      expect(out[20].candidate, isFalse);
+      expect(out[21].flagged, isFalse,
+          reason: 'an improvement is not an illness signature');
+    });
+
     test('a single isolated spike is NOT flagged (persistence gate)', () {
       final feats = <AnomalyFeatures>[
         for (var i = 0; i < 20; i++) normalNight(),
